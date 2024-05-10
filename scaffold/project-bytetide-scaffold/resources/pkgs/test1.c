@@ -5,9 +5,7 @@
 
 #include <ctype.h>
 #include <stdint.h>
-#include <stddef.h>
-#include <string.h>
-#include <stdio.h>
+
 
 #define SHA256K 64
 #define rotate_r(val, bits) (val >> bits | val << (32 - bits))
@@ -73,11 +71,8 @@ typedef struct{
 	Chunks* chunks;
 }bpkg_obj;
 
-// void bpkg_load(const char* path);
+
 bpkg_obj* bpkg_load(const char* path);
-// struct merkle_tree_node* create_node(char* hash, char isLeaf);
-// struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count);
-// void free_merkle_tree(struct merkle_tree_node* node);
 void free_tree(struct merkle_tree_node* node);
 struct merkle_tree_node* build_merkle_tree(char** hashes, int n);
 void compute_hash(struct merkle_tree_node* node);
@@ -410,7 +405,6 @@ bpkg_obj* bpkg_load(const char* path) {
         }
 
         strcpy(obj->hashes[actualIndex], tempstore);  // Copy non-empty line into hashes
-        //obj->hashes[actualIndex][strcspn(obj->hashes[actualIndex], "\r\n")] = 0;  // Remove newline characters
 	obj->hashes[actualIndex] = strtok(obj->hashes[actualIndex], "\r\n");
 	obj->hashes[actualIndex] = strtok(obj->hashes[actualIndex], "\t");
         printf("%d: %s\n", actualIndex, obj->hashes[actualIndex]);
@@ -505,60 +499,6 @@ void get_sha256_hash(char* input, char* output) {
 }
 
 
-// struct merkle_tree_node* create_node(char* hash, char isLeaf) {
-//     struct merkle_tree_node* node = malloc(sizeof(struct merkle_tree_node));
-//     if (!node) {
-//         return NULL;
-//     }
-//     if (isLeaf) {
-//         // Directly use the hash for leaf nodes
-//         strncpy(node->computed_hash, hash, 64);
-//         //node->computed_hash[SHA256_CHUNK_SZ] = '\0';
-//     } else {
-//         // Compute the hash for internal nodes
-//         get_sha256_hash(hash, node->computed_hash);
-//         printf("computed hash: %s\n\n", node->computed_hash);
-//     }
-//     node->left = node->right = NULL;
-//     return node;
-// }
-
-
-
-
-// struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count) {
-//     if (start > end) {
-//         return NULL; // Empty tree for invalid range
-//     }
-//     if (start == end) {
-//         if (leaf_count) (*leaf_count)++;
-//         return create_node(data[start], 1);
-//     }
-//     int mid = (start + end) / 2;
-//     struct merkle_tree_node* left = build_merkle_tree(data, start, mid, leaf_count);
-//     struct merkle_tree_node* right = build_merkle_tree(data, mid + 1, end, leaf_count);
-//     if (!left || !right) {
-//         free_merkle_tree(left);
-//         free_merkle_tree(right);
-//         return NULL;
-//     }
-//     char concatenated_hashes[2 * 66] = {0};
-//     snprintf(concatenated_hashes, sizeof(concatenated_hashes), "%s%s", left->computed_hash, right->computed_hash);
-//     //printf("leaf count:%d\n",*leaf_count);
-//     struct merkle_tree_node* parent = create_node(concatenated_hashes, 0);
-//     parent->left = left;
-//     parent->right = right;
-//     //printf("leaf count:%d\n",*leaf_count);
-//     return parent;
-// }
-
-
-// void free_merkle_tree(struct merkle_tree_node* node) {
-//     if (!node) return;
-//     free_merkle_tree(node->left);
-//     free_merkle_tree(node->right);
-//     free(node);
-// }
 struct merkle_tree_node* create_node(const char* hash, int is_leaf) {
     struct merkle_tree_node* node = (struct merkle_tree_node*)malloc(sizeof(struct merkle_tree_node));
     if (!node){
@@ -577,16 +517,15 @@ struct merkle_tree_node* create_node(const char* hash, int is_leaf) {
     return node;
 }
 
-// 辅助函数：计算两个哈希值的组合哈希
+
 void compute_hash(struct merkle_tree_node* node) {
-  //char combined[2048]; // 假设哈希值长度为64字符
   char* combined =(char*)malloc(sizeof(node->computed_hash)*2);
     sprintf(combined, "%s%s", node->left->computed_hash, node->right->computed_hash);
     get_sha256_hash(combined, node->computed_hash);
     free(combined);
 }
 
-// 从一组哈希值构建 Merkle 树
+
 struct merkle_tree_node* build_merkle_tree(char** hashes, int n) {
     struct merkle_tree_node** nodes = malloc(sizeof(struct merkle_tree_node*) * n);
     if(!nodes){
@@ -595,7 +534,7 @@ struct merkle_tree_node* build_merkle_tree(char** hashes, int n) {
     }
     for (int i = 0; i < n; i++) {
       printf("create %d: \n",i);
-        nodes[i] = create_node(hashes[i], 1); // 创建叶节点
+        nodes[i] = create_node(hashes[i], 1); 
 	if(!nodes[i]){
 	  fprintf(stderr, "Fail to create a leaf node.\n");
 	  while(--i>=0) free(nodes[i]);
@@ -617,10 +556,10 @@ struct merkle_tree_node* build_merkle_tree(char** hashes, int n) {
 		}
                 nodes[j]->left = nodes[i];
                 nodes[j]->right = nodes[i + 1];
-                compute_hash(nodes[j]); // 计算组合哈希
+                compute_hash(nodes[j]); 
 		printf("node %d computed hash: %s\n", j, nodes[j]->computed_hash);
             } else {
-                nodes[j] = nodes[i]; // 奇数个节点的情况
+                nodes[j] = nodes[i]; 
             }
             j++;
         }
@@ -631,16 +570,6 @@ struct merkle_tree_node* build_merkle_tree(char** hashes, int n) {
     
     free(nodes);
     return root;
-}
-
-void free_tree(struct merkle_tree_node* node) {
-  if (node == NULL) {
-    fprintf(stderr, "something wrong...");
-    return;
-  }
-    free_tree(node->left);
-    free_tree(node->right);
-    free(node);
 }
 
 
@@ -670,9 +599,7 @@ int main(){
     }
     
     // Clean up
-    free_tree(root);
     free(hashes);
-    //free(obj);
-    printf("over!");
+    printf("over!\n");
     return 0;
 }
