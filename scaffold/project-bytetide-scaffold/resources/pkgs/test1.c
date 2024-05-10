@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <string.h>
 
-
-
+#include <ctype.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
@@ -55,7 +55,6 @@ struct merkle_tree_node {
 struct merkle_tree {
     struct merkle_tree_node* root;
     size_t n_nodes;
-    size_t leaf_count;
 };
 typedef struct{
 	char* hash;
@@ -76,10 +75,13 @@ typedef struct{
 
 // void bpkg_load(const char* path);
 bpkg_obj* bpkg_load(const char* path);
-struct merkle_tree_node* create_node(char* hash, char isLeaf);
-struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count);
-void free_merkle_tree(struct merkle_tree_node* node);
-
+// struct merkle_tree_node* create_node(char* hash, char isLeaf);
+// struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count);
+// void free_merkle_tree(struct merkle_tree_node* node);
+void free_tree(struct merkle_tree_node* node);
+struct merkle_tree_node* build_merkle_tree(char** hashes, int n);
+void compute_hash(struct merkle_tree_node* node);
+struct merkle_tree_node* create_node(const char* hash, int is_leaf);
 
 
 //Constant List from: https://en.wikipedia.org/wiki/SHA-2#Pseudocode
@@ -312,88 +314,181 @@ bpkg_obj* bpkg_load(const char* path) {
     bpkg_obj* obj = malloc(sizeof(bpkg_obj));
     if (obj == NULL) {
         fprintf(stderr, "Memory allocation failed for bpkg_obj\n");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     FILE* file = fopen(path, "r");
     if (file == NULL) {
         perror("Failed to open file");
         free(obj);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     char buffer[1025];
+    memset(buffer, 0, sizeof(buffer));  // Initialize buffer to zero
 
-    
     // Read identifier
-    if (fgets(buffer, sizeof(buffer), file) != NULL) {
-        buffer[strcspn(buffer, "\r\n")] = 0;  // Remove newline characters
-        obj->ident = strdup(buffer + 6);
-        printf("Ident: %s\n", obj->ident);
+    if (!fgets(buffer, sizeof(buffer), file) || buffer[5] != ':') {
+        fprintf(stderr, "Failed to read identifier\n");
+        fclose(file);
+        free(obj);
+        return NULL;
     }
+    buffer[strcspn(buffer, "\r\n")] = 0;  // Remove newline characters
+    obj->ident = strdup(buffer + 6);
+    printf("Ident: %s\n", obj->ident);
 
     clear_rest_line(file, buffer);
 
     // Read filename
-    if (fgets(buffer, sizeof(buffer), file) != NULL) {
-        buffer[strcspn(buffer, "\r\n")] = 0;  // Remove newline characters
-        obj->filename = strdup(buffer + 9);
-        printf("Filename: %s\n", obj->filename);
+    if (!fgets(buffer, sizeof(buffer), file) || buffer[8] != ':') {
+        fprintf(stderr, "Failed to read filename\n");
+        fclose(file);
+        free(obj);
+        free(obj->ident);
+        return NULL;
     }
+    buffer[strcspn(buffer, "\r\n")] = 0;
+    obj->filename = strdup(buffer + 9);
+    printf("Filename: %s\n", obj->filename);
 
     // Read size
-    if (fgets(buffer, sizeof(buffer), file) != NULL) {
-        buffer[strcspn(buffer, "\r\n")] = 0;
-        if (sscanf(buffer, "size:%u", &obj->size) != 1) {
-            fprintf(stderr, "Failed to parse size.\n");
-            exit(EXIT_FAILURE);
-        }
-        printf("Size: %u\n", obj->size);
+    if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "size:%u", &obj->size) != 1) {
+        fprintf(stderr, "Failed to parse size.\n");
+        fclose(file);
+        free(obj->filename);
+        free(obj->ident);
+        free(obj);
+        return NULL;
     }
+    printf("Size: %u\n", obj->size);
 
     // Read nhashes
-    if (fgets(buffer, sizeof(buffer), file) != NULL) {
-        buffer[strcspn(buffer, "\r\n")] = 0;
-        if (sscanf(buffer, "nhashes:%u", &obj->nhashes) != 1) {
-            fprintf(stderr, "Failed to parse nhashes.\n");
-            exit(EXIT_FAILURE);
-        }
-        printf("Nhashes: %u\n", obj->nhashes);
+    if (!fgets(buffer, sizeof(buffer), file) || sscanf(buffer, "nhashes:%u", &obj->nhashes) != 1) {
+        fprintf(stderr, "Failed to parse nhashes.\n");
+        fclose(file);
+        free(obj->filename);
+        free(obj->ident);
+        free(obj);
+        return NULL;
     }
-    char temp[65];
-    fgets(temp, sizeof(temp), file);
-    // Dynamic memory allocation for storing hashes, as an example
-    obj->hashes = (char**)malloc(obj->nhashes * sizeof(char*));
-    for(int i=0;i<obj->nhashes;i++){
-        obj->hashes[i] = (char*)malloc(66);
-        if(fgets(obj->hashes[i],66,file)!=NULL){
-            obj->hashes[i][strcspn(obj->hashes[i], "\r\n")] = 0;
-            printf("%d: %s\n", i, obj->hashes[i]);
-        }else{
-            printf("error\n");
-        }
+    printf("Nhashes: %u\n", obj->nhashes);
+    // Read and allocate nchunks
+    // Assuming that `obj->nhashes` represents the number of actual non-empty hash entries you expect
+    obj->hashes = (char**)malloc(obj->nhashes * sizeof(char*));  // Allocate memory for storing hashes
+    if (obj->hashes == NULL) {
+        fprintf(stderr, "Failed to allocate memory for hashes\n");
+        fclose(file);
+        free(obj->filename);
+        free(obj->ident);
+        free(obj);
+        return NULL;
     }
+    char temp[64];
+    fgets(temp, 64, file);
+    int actualIndex = 0;  // This will keep track of non-empty lines
+    for (int i = 0; i < obj->nhashes * 2; i++) {
+        char* tempstore = (char*)malloc(66);  // Temporary storage for a line
+        if (fgets(tempstore, 66, file) == NULL) {
+            free(tempstore);
+            break;  // Exit if there are no more lines to read
+        }
+
+    // Check if the line is not just empty or whitespace
+    if (tempstore[0] != '\n' && tempstore[0] != '\r' && strlen(tempstore) > 0) {
+        // Ensure there is enough allocated space
+        if (actualIndex > obj->nhashes) {
+            fprintf(stderr, "More non-empty lines than expected\n");
+            break;
+        }
+
+        obj->hashes[actualIndex] = (char*)malloc(66);  // Allocate space for each hash
+        if (obj->hashes[actualIndex] == NULL) {
+            fprintf(stderr, "Failed to allocate memory for hash %d\n", actualIndex);
+            free(tempstore);
+            break;
+        }
+
+        strcpy(obj->hashes[actualIndex], tempstore);  // Copy non-empty line into hashes
+        obj->hashes[actualIndex][strcspn(obj->hashes[actualIndex], "\r\n")] = 0;  // Remove newline characters
+        printf("%d: %s\n", actualIndex, obj->hashes[actualIndex]);
+        actualIndex++;  // Increment the count of actual hashes
+    }
+
+    free(tempstore);
+}
+
+    // Now actualIndex should hold the count of non-blank hashes
+    if (actualIndex != obj->nhashes) {
+        fprintf(stderr, "Mismatch in the number of expected non-empty hashes\n");
+        // You may want to handle this case according to your needs
+    }
+
     char tempb[65];
-    // Allocate the read nchunks
-    if (fgets(tempb, sizeof(tempb), file) == NULL) {
-        fprintf(stderr, "Failed to read line from file\n");
-    // Handle error, such as exiting or skipping further processing
-    } else {
-    // Now parse the integer from the buffer
-        if (sscanf(tempb, "%u", &obj->nchunks) != 1) {
-            fprintf(stderr, "Failed to parse integer from line\n");
-        // Handle parsing error
+    
+
+if (fgets(buffer, sizeof(buffer), file)) {
+
+    if (sscanf(buffer, "nchunks:%u", &obj->nchunks) != 1) {
+        fprintf(stderr, "Failed to parse nchunks.\n");
+        fclose(file);
+        free(obj->filename);
+        free(obj->ident);
+        free(obj);
+        return NULL;
     }
-    obj->nchunks = 256;
-    }
-    printf("nchunks: %d\n",obj->nchunks);
-    // Allocate and read chunks
+    printf("Nchunks: %u\n", obj->nchunks);
+} else {
+    fprintf(stderr, "Failed to read line for nchunks.\n");
+    fclose(file);
+    free(obj->filename);
+    free(obj->ident);
+    free(obj);
+    return NULL;
+}
+fgets(buffer, sizeof(buffer), file);
+
+    char line[256];
+    int index = 0;
+    unsigned long tempOffset, tempSize;
     obj->chunks = malloc(obj->nchunks * sizeof(Chunks));
-    for (int i = 0; i < obj->nchunks; i++) {
-        obj->chunks[i].hash = malloc(66);
-        fgets(buffer, sizeof(buffer), file);
-        sscanf(buffer, "%64s %u %u", obj->chunks[i].hash, &obj->chunks[i].offset, &obj->chunks[i].size);
+    if(obj->chunks == NULL){
+            fprintf(stderr, "Failed to allocate memory for hash\n");
+            fclose(file);
+            return NULL;
     }
+    while (fgets(line, sizeof(line), file) && index < obj->nchunks) {
+        char* clean_line = strtok(line, "\n\r"); // Remove newline characters first if any
+        clean_line = strtok(clean_line, "\t"); // Remove leading and trailing spaces/tabs
+        obj->chunks[index].hash = malloc(65);
+        if (obj->chunks[index].hash == NULL) {
+            fprintf(stderr, "Failed to allocate memory for hash\n");
+            fclose(file);
+            return NULL;
+        }
+
+        // Parse the line
+        int result = sscanf(clean_line, "%64[^,],%lu,%lu", obj->chunks[index].hash, &tempOffset, &tempSize);
+        if(result!=3){
+            printf("DID NOT READ ALL DATA!");
+        }
+        obj->chunks[index].offset = (uint32_t)tempOffset;
+        obj->chunks[index].size = (uint32_t)tempSize;
+        // Remove potential newline character
+        obj->chunks[index].hash[strcspn(obj->chunks[index].hash, "\r\n")] = 0;
+
+        index++;
+    }
+
+
+    // Example usage: Print each chunk's information
+    for (int i = 0; i < obj->nchunks; i++) {
+        printf("Chunk %d: Hash = %s, Offset = %u, Size = %u\n",
+               i, obj->chunks[i].hash, obj->chunks[i].offset, obj->chunks[i].size);
+    }
+
+    // Free the allocated memory
+    free(obj->chunks);
 
     fclose(file);
     return obj;
@@ -407,7 +502,8 @@ void get_sha256_hash(char* input, char* output) {
     sha256_output_hex(&data, output);  // Assumes output is large enough to hold the hash
 }
 
-// struct merkle_tree_node* create_node(struct merkle_tree mtree,char* hash, char isLeaf) {
+
+// struct merkle_tree_node* create_node(char* hash, char isLeaf) {
 //     struct merkle_tree_node* node = malloc(sizeof(struct merkle_tree_node));
 //     if (!node) {
 //         return NULL;
@@ -415,108 +511,133 @@ void get_sha256_hash(char* input, char* output) {
 //     if (isLeaf) {
 //         // Directly use the hash for leaf nodes
 //         strncpy(node->computed_hash, hash, 64);
+//         //node->computed_hash[SHA256_CHUNK_SZ] = '\0';
 //     } else {
 //         // Compute the hash for internal nodes
 //         get_sha256_hash(hash, node->computed_hash);
-//         printf("%s\n\n", node->computed_hash);
+//         printf("computed hash: %s\n\n", node->computed_hash);
 //     }
 //     node->left = node->right = NULL;
 //     return node;
 // }
-struct merkle_tree_node* create_node(char* hash, char isLeaf) {
-    struct merkle_tree_node* node = malloc(sizeof(struct merkle_tree_node));
-    if (!node) {
-        return NULL;
-    }
-    if (isLeaf) {
-        // Directly use the hash for leaf nodes
-        strncpy(node->computed_hash, hash, 64);
-        //node->computed_hash[SHA256_CHUNK_SZ] = '\0';
-    } else {
-        // Compute the hash for internal nodes
-        get_sha256_hash(hash, node->computed_hash);
-        printf("computed hash: %s\n\n", node->computed_hash);
-    }
-    node->left = node->right = NULL;
-    return node;
-}
 
-// struct merkle_tree_node* build_merkle_tree(char** data, int start, int end) {
+
+
+
+// struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count) {
+//     if (start > end) {
+//         return NULL; // Empty tree for invalid range
+//     }
 //     if (start == end) {
-//         // Base case: create a leaf node
+//         if (leaf_count) (*leaf_count)++;
 //         return create_node(data[start], 1);
 //     }
 //     int mid = (start + end) / 2;
-
-//     struct merkle_tree_node* left = build_merkle_tree(data, start, mid);
-//     struct merkle_tree_node* right = build_merkle_tree(data, mid + 1, end);
-
-//     char concatenated_hashes[2 * 65] = {0};  // Two hashes concatenated
+//     struct merkle_tree_node* left = build_merkle_tree(data, start, mid, leaf_count);
+//     struct merkle_tree_node* right = build_merkle_tree(data, mid + 1, end, leaf_count);
+//     if (!left || !right) {
+//         free_merkle_tree(left);
+//         free_merkle_tree(right);
+//         return NULL;
+//     }
+//     char concatenated_hashes[2 * 66] = {0};
 //     snprintf(concatenated_hashes, sizeof(concatenated_hashes), "%s%s", left->computed_hash, right->computed_hash);
-
+//     //printf("leaf count:%d\n",*leaf_count);
 //     struct merkle_tree_node* parent = create_node(concatenated_hashes, 0);
 //     parent->left = left;
 //     parent->right = right;
+//     //printf("leaf count:%d\n",*leaf_count);
 //     return parent;
 // }
-struct merkle_tree_node* build_merkle_tree(char** data, int start, int end, int* leaf_count) {
-    if (start > end) {
-        return NULL; // Empty tree for invalid range
-    }
-    if (start == end) {
-        if (leaf_count) (*leaf_count)++;
-        return create_node(data[start], 1);
-    }
-    int mid = (start + end) / 2;
-    struct merkle_tree_node* left = build_merkle_tree(data, start, mid, leaf_count);
-    struct merkle_tree_node* right = build_merkle_tree(data, mid + 1, end, leaf_count);
-    if (!left || !right) {
-        free_merkle_tree(left);
-        free_merkle_tree(right);
-        return NULL;
-    }
-    char concatenated_hashes[2 * 65] = {0};
-    snprintf(concatenated_hashes, sizeof(concatenated_hashes), "%s%s", left->computed_hash, right->computed_hash);
-    printf("leaf count:%d\n",*leaf_count);
-    struct merkle_tree_node* parent = create_node(concatenated_hashes, 0);
-    parent->left = left;
-    parent->right = right;
-    return parent;
+
+
+// void free_merkle_tree(struct merkle_tree_node* node) {
+//     if (!node) return;
+//     free_merkle_tree(node->left);
+//     free_merkle_tree(node->right);
+//     free(node);
+// }
+struct merkle_tree_node* create_node(const char* hash, int is_leaf) {
+    struct merkle_tree_node* node = (struct merkle_tree_node*)malloc(sizeof(struct merkle_tree_node));
+    if (!node) return NULL;
+    strcpy(node->computed_hash, hash);
+    node->left = node->right = NULL;
+    node->is_leaf = is_leaf;
+    return node;
 }
 
+// 辅助函数：计算两个哈希值的组合哈希
+void compute_hash(struct merkle_tree_node* node) {
+    char combined[128]; // 假设哈希值长度为64字符
+    sprintf(combined, "%s%s", node->left->computed_hash, node->right->computed_hash);
+    get_sha256_hash(combined, node->computed_hash);
+}
 
-void free_merkle_tree(struct merkle_tree_node* node) {
-    if (!node) return;
-    free_merkle_tree(node->left);
-    free_merkle_tree(node->right);
+// 从一组哈希值构建 Merkle 树
+struct merkle_tree_node* build_merkle_tree(char** hashes, int n) {
+    struct merkle_tree_node** nodes = malloc(sizeof(struct merkle_tree_node*) * n);
+    for (int i = 0; i < n; i++) {
+        nodes[i] = create_node(hashes[i], 1); // 创建叶节点
+    }
+
+    while (n > 1) {
+        int j = 0;
+        for (int i = 0; i < n; i += 2) {
+            if (i + 1 < n) {
+                nodes[j] = create_node("", 0);
+                nodes[j]->left = nodes[i];
+                nodes[j]->right = nodes[i + 1];
+                compute_hash(nodes[j]); // 计算组合哈希
+            } else {
+                nodes[j] = nodes[i]; // 奇数个节点的情况
+            }
+            j++;
+        }
+        n = j;
+    }
+
+    struct merkle_tree_node* root = n > 0 ? nodes[0] : NULL;
+    free(nodes);
+    return root;
+}
+
+void free_tree(struct merkle_tree_node* node) {
+    if (node == NULL) return;
+    free_tree(node->left);
+    free_tree(node->right);
     free(node);
 }
-
-// int build_tree(struct merkle_tree* mtree, unsigned char** hashes, int length){
-//     //initial the counter
-//     int i,j;
-//     int leaf_count = strlen(hashes);
-//     int node_count = (leaf_count*2)-1;
-//     //initial the tree construct
-    
-//     for(i=0;i<node_count;i++){
-//         mtree->root[i].value =  (char*)malloc(sizeof(char)*16);
-//         mtree->root[i].key = i;
-//         mtree->root[i].left = -1;
-//         mtree->root[i].right = -1;
-//         mtree->root[i].computed_hash = hashes[i];
-//     }
-// }
 
 
 int main(){     
     char* filename = "file1.bpkg";
     bpkg_obj* obj = malloc(sizeof(bpkg_obj));
     obj = bpkg_load(filename);
-    int leaf_count = 0;
-    struct merkle_tree_node* root = build_merkle_tree(obj->hashes, 0, obj->nhashes, &leaf_count);
-    printf("Leaf count: %d\n", leaf_count);
-    free_merkle_tree(root);
-    return 0;
+    if (obj->nchunks == 0 || obj->chunks == NULL) {
+        printf("No chunks to build a Merkle tree.\n");
+        return -1;
+    }
+    // Prepare an array of hash pointers for building the Merkle tree
+    char** hashes = malloc(sizeof(char*) * obj->nchunks);
+    if (hashes == NULL) {
+        printf("Failed to allocate memory for hash pointers.\n");
+        return -1;
+    }
 
+    for (int i = 0; i < obj->nchunks; i++) {
+        hashes[i] = obj->chunks[i].hash;
+    }
+    struct merkle_tree_node* root = build_merkle_tree(hashes, obj->nchunks);
+    if (root == NULL) {
+        printf("Failed to build the Merkle tree.\n");
+        free(hashes);
+        return -1;
+    }
+    
+    // Clean up
+    free_tree(root);
+    free(hashes);
+    //free(obj);
+    printf("over!");
+    return 0;
 }
