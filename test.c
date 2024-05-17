@@ -23,20 +23,21 @@ struct merkle_tree_node {
     char expected_hash[SHA256_HEXLEN];
     char computed_hash[SHA256_HEXLEN];
 };
+typedef struct{
+    char* hash;
+    uint32_t offset;
+    uint32_t size;
+}Chunks;
 
-struct bpkg_obj {
+typedef struct{
     char *ident;
     char *filename;
     uint32_t size;
     uint32_t nhashes;
     char **hashes;
     uint32_t nchunks;
-    struct {
-        char hash[SHA256_HEXLEN];
-        uint32_t offset;
-        uint32_t size;
-    } *chunks;
-};
+    Chunks* chunks;
+}bpkg_obj;
 
 void sha256_compute_data_init(struct sha256_compute_data *data);
 void sha256_calculate_chunk(struct sha256_compute_data *data, uint8_t chunk[SHA256_CHUNK_SZ]);
@@ -44,13 +45,15 @@ void sha256_update(struct sha256_compute_data *data, void *bytes, uint32_t size)
 void sha256_finalize(struct sha256_compute_data *data, uint8_t hash[SHA256_INT_SZ]);
 void sha256_output_hex(struct sha256_compute_data *data, char hexbuf[SHA256_HEXLEN]);
 
+
 bpkg_obj *bpkg_load(const char *path);
 struct merkle_tree_node *create_node(const char *expected_hash, const char *computed_hash, int is_leaf);
 void compute_hash(struct merkle_tree_node *node);
-struct merkle_tree_node *build_merkle_tree(struct bpkg_obj *obj, char **computed_hashes);
+struct merkle_tree_node *build_merkle_tree(bpkg_obj *obj, char **computed_hashes);
 void free_tree(struct merkle_tree_node *node);
 void get_sha256_hash(char *input, char *output);
 void clear_rest_line(FILE *file, char buffer[]);
+void print_merkle_tree(struct merkle_tree_node* node, int level);
 
 static const uint32_t k[SHA256K] = { /* initialize with SHA-256 constants */ };
 
@@ -385,7 +388,7 @@ void compute_hash(struct merkle_tree_node *node) {
     }
 }
 
-struct merkle_tree_node *build_merkle_tree(struct bpkg_obj *obj, char **computed_hashes) {
+struct merkle_tree_node *build_merkle_tree(bpkg_obj *obj, char **computed_hashes) {
     int n = obj->nchunks;
     int total_nodes = n * 2 - 1;  // Maximum number of nodes in a complete binary tree
     struct merkle_tree_node **nodes = malloc(sizeof(struct merkle_tree_node *) * total_nodes);
@@ -448,6 +451,18 @@ void free_tree(struct merkle_tree_node *node) {
     free(node);
 }
 
+void print_merkle_tree(struct merkle_tree_node* node, int level){
+  if (node==NULL){
+    return;
+  }
+  for(int i=0;i<level;i++){
+    printf("  ");
+  }
+  printf("Level %d | Expected hash: %s | Computed hash: %s | %s\n", level,node->expected_hash,node->computed_hash,node->is_leaf?"leaf":"non-leaf");
+  print_merkle_tree(node->left, level+1);
+  print_merkle_tree(node->left, level+1);
+}
+
 int main() {
     char *bpkg_filename = "file1.bpkg";
     char *data_filename = "file1.data";
@@ -489,10 +504,13 @@ int main() {
         return -1;
     }
 
-    for (int i = 0; i < obj->nhashes; i++) {
-        printf("Expected hash: %s\n", obj->hashes[i]);
+    //for (int i = 0; i < obj->nhashes; i++) {
+    //    printf("Expected hash: %s\n", obj->hashes[i]);
+    //}
+    for(int i=0;i<obj->nchunks;i++){
+      printf("computed hash: %s\n",computed_hashes[i]);
     }
-
+    print_merkle_tree(root,0);
     free_tree(root);
     free(computed_hashes);
     return 0;
