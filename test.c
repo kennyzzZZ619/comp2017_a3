@@ -8,6 +8,7 @@
 #define SHA256_HEXLEN 64
 #define SHA256_CHUNK_SZ 64
 #define SHA256_INT_SZ 8
+#define rotate_r(val,bits) (val >> bits | val << (32 - bits))
 
 struct sha256_compute_data {
     uint64_t data_size;
@@ -55,7 +56,41 @@ void get_sha256_hash(char *input, char *output);
 void clear_rest_line(FILE *file, char buffer[]);
 void print_merkle_tree(struct merkle_tree_node* node, int level);
 
-static const uint32_t k[SHA256K] = { /* initialize with SHA-256 constants */ };
+static const uint32_t k[SHA256K] = {
+    0x428a2f98, 0x71374491, 
+    0xb5c0fbcf, 0xe9b5dba5, 
+    0x3956c25b, 0x59f111f1, 
+    0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 
+    0x243185be, 0x550c7dc3, 
+    0x72be5d74, 0x80deb1fe, 
+    0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 
+    0x0fc19dc6, 0x240ca1cc, 
+    0x2de92c6f, 0x4a7484aa, 
+    0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 
+    0xb00327c8, 0xbf597fc7, 
+    0xc6e00bf3, 0xd5a79147, 
+    0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 
+    0x4d2c6dfc, 0x53380d13, 
+    0x650a7354, 0x766a0abb, 
+    0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 
+    0xc24b8b70, 0xc76c51a3, 
+    0xd192e819, 0xd6990624, 
+    0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 
+    0x2748774c, 0x34b0bcb5, 
+    0x391c0cb3, 0x4ed8aa4a, 
+    0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 
+    0x84c87814, 0x8cc70208, 
+    0x90befffa, 0xa4506ceb, 
+    0xbef9a3f7, 0xc67178f2
+};
+//static const uint32_t k[SHA256K] = { /* initialize with SHA-256 constants */ };
 
 void sha256_compute_data_init(struct sha256_compute_data *data) {
     data->hcomps[0] = 0x6a09e667;
@@ -71,46 +106,72 @@ void sha256_compute_data_init(struct sha256_compute_data *data) {
     data->chunk_size = 0;
 }
 
-void sha256_calculate_chunk(struct sha256_compute_data *data, uint8_t chunk[SHA256_CHUNK_SZ]) {
-    uint32_t w[SHA256_CHUNK_SZ];
-    uint32_t tv[SHA256_INT_SZ];
+void sha256_calculate_chunk(struct sha256_compute_data *data, 
+		uint8_t chunk[SHA256_CHUNK_SZ]) {
+	uint32_t w[SHA256_CHUNK_SZ];
+	uint32_t tv[SHA256_INT_SZ];
 
-    for (uint32_t i = 0; i < 16; i++) {
-        w[i] = (uint32_t)chunk[0] << 24 | (uint32_t)chunk[1] << 16 | (uint32_t)chunk[2] << 8 | (uint32_t)chunk[3];
-        chunk += 4;
-    }
+    //
+	for(uint32_t i = 0; i < 16; i++) {
+		w[i] = (uint32_t) chunk[0] << 24 
+			| (uint32_t) chunk[1] << 16 
+			| (uint32_t) chunk[2] << 8 
+			| (uint32_t) chunk[3];
 
-    for (uint32_t i = 16; i < 64; i++) {
-        uint32_t s0 = (w[i - 15] >> 7 | w[i - 15] << (32 - 7)) ^ (w[i - 15] >> 18 | w[i - 15] << (32 - 18)) ^ (w[i - 15] >> 3);
-        uint32_t s1 = (w[i - 2] >> 17 | w[i - 2] << (32 - 17)) ^ (w[i - 2] >> 19 | w[i - 2] << (32 - 19)) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
+		chunk += 4;
+	}
 
-    for (uint32_t i = 0; i < SHA256_INT_SZ; i++) {
-        tv[i] = data->hcomps[i];
-    }
+    //
+	for(uint32_t i = 16; i < 64; i++) {
+		
+		uint32_t s0 = rotate_r(w[i-15], 7) 
+			    ^ rotate_r(w[i-15], 18) 
+			    ^ (w[i-15] >> 3);
+		
+		uint32_t s1 = rotate_r(w[i-2], 17) 
+			    ^ rotate_r(w[i-2], 19) 
+			    ^ (w[i-2] >> 10);
 
-    for (uint32_t i = 0; i < SHA256_CHUNK_SZ; i++) {
-        uint32_t S1 = (tv[4] >> 6 | tv[4] << (32 - 6)) ^ (tv[4] >> 11 | tv[4] << (32 - 11)) ^ (tv[4] >> 25 | tv[4] << (32 - 25));
-        uint32_t ch = (tv[4] & tv[5]) ^ (~tv[4] & tv[6]);
-        uint32_t temp1 = tv[7] + S1 + ch + k[i] + w[i];
-        uint32_t S0 = (tv[0] >> 2 | tv[0] << (32 - 2)) ^ (tv[0] >> 13 | tv[0] << (32 - 13)) ^ (tv[0] >> 22 | tv[0] << (32 - 22));
-        uint32_t maj = (tv[0] & tv[1]) ^ (tv[0] & tv[2]) ^ (tv[1] & tv[2]);
-        uint32_t temp2 = S0 + maj;
+		w[i] = w[i-16] + s0 + w[i-7] + s1;
+	}
 
-        tv[7] = tv[6];
-        tv[6] = tv[5];
-        tv[5] = tv[4];
-        tv[4] = tv[3] + temp1;
-        tv[3] = tv[2];
-        tv[2] = tv[1];
-        tv[1] = tv[0];
-        tv[0] = temp1 + temp2;
-    }
+	for(uint32_t i = 0; i < SHA256_INT_SZ; i++) {
+		tv[i] = data->hcomps[i];
+	}
 
-    for (uint32_t i = 0; i < SHA256_INT_SZ; i++) {
-        data->hcomps[i] += tv[i];
-    }
+	for(uint32_t i = 0; i < SHA256_CHUNK_SZ; i++) {
+		uint32_t S1 = rotate_r(tv[4], 6) 
+			    ^ rotate_r(tv[4], 11) 
+			    ^ rotate_r(tv[4], 25);
+
+		uint32_t ch = (tv[4] & tv[5]) 
+			    ^ (~tv[4] & tv[6]);
+		
+		uint32_t temp1 = tv[7] + S1 + ch + k[i] + w[i];
+		
+		uint32_t S0 = rotate_r(tv[0], 2) 
+			    ^ rotate_r(tv[0], 13) 
+			    ^ rotate_r(tv[0], 22);
+		
+		uint32_t maj = (tv[0] & tv[1]) 
+			     ^ (tv[0] & tv[2]) 
+			     ^ (tv[1] & tv[2]);
+		
+		uint32_t temp2 = S0 + maj;
+		
+		tv[7] = tv[6];
+		tv[6] = tv[5];
+		tv[5] = tv[4];
+		tv[4] = tv[3] + temp1;
+		tv[3] = tv[2];
+		tv[2] = tv[1];
+		tv[1] = tv[0];
+		tv[0] = temp1 + temp2;
+	}
+
+	for(uint32_t i = 0; i < SHA256_INT_SZ; i++) {
+		data->hcomps[i] += tv[i];
+	}
 }
 
 void sha256_update(struct sha256_compute_data *data, void *bytes, uint32_t size) {
@@ -351,13 +412,6 @@ bpkg_obj *bpkg_load(const char *path) {
     return obj;
 }
 
-void get_sha256_hash(char *input, char *output) {
-    struct sha256_compute_data data;
-    sha256_compute_data_init(&data);
-    sha256_update(&data, input, strlen(input));
-    sha256_finalize(&data, (uint8_t *)output);
-    sha256_output_hex(&data, output);
-}
 
 struct merkle_tree_node *create_node(const char *expected_hash, const char *computed_hash, int is_leaf) {
     struct merkle_tree_node *node = malloc(sizeof(struct merkle_tree_node));
@@ -388,7 +442,7 @@ void compute_hash(struct merkle_tree_node *node) {
     }
 }
 
-struct merkle_tree_node *build_merkle_tree(bpkg_obj *obj, char **computed_hashes) {
+struct merkle_tree_node *build_merkle_tree1(bpkg_obj *obj, char **computed_hashes) {
     int n = obj->nchunks;
     int total_nodes = n * 2 - 1;  // Maximum number of nodes in a complete binary tree
     struct merkle_tree_node **nodes = malloc(sizeof(struct merkle_tree_node *) * total_nodes);
@@ -444,6 +498,8 @@ struct merkle_tree_node *build_merkle_tree(bpkg_obj *obj, char **computed_hashes
     return root;
 }
 
+
+
 void free_tree(struct merkle_tree_node *node) {
     if (!node) return;
     free_tree(node->left);
@@ -463,6 +519,14 @@ void print_merkle_tree(struct merkle_tree_node* node, int level){
   print_merkle_tree(node->left, level+1);
 }
 
+void get_sha256_hash(char *input, char *output) {
+    struct sha256_compute_data data;
+    sha256_compute_data_init(&data);
+    sha256_update(&data, input, strlen(input));
+    sha256_finalize(&data, (uint8_t *)output);
+    sha256_output_hex(&data, output);
+}
+
 int main() {
     char *bpkg_filename = "file1.bpkg";
     char *data_filename = "file1.data";
@@ -472,12 +536,7 @@ int main() {
         return -1;
     }
 
-    FILE *data_file = fopen(data_filename, "rb");
-    if (!data_file) {
-        perror("Failed to open data file");
-        return -1;
-    }
-
+    FILE* data_file = fopen(data_filename,"rb");
     char **computed_hashes = malloc(obj->nchunks * sizeof(char *));
     if (!computed_hashes) {
         fprintf(stderr, "Failed to allocate hashes.\n");
@@ -489,14 +548,17 @@ int main() {
         fseek(data_file, obj->chunks[i].offset, SEEK_SET);
         char *data_chunk = malloc(obj->chunks[i].size);
         fread(data_chunk, 1, obj->chunks[i].size, data_file);
-
-        char computed_hash[SHA256_HEXLEN];
-        get_sha256_hash(data_chunk, computed_hash);
+	
+        char computed_hash[SHA256_HEXLEN+1];
+	struct sha256_compute_data cdata;
+	sha256_compute_data_init(&cdata);
+	sha256_update(&cdata,data_chunk,obj->chunks[i].size);
+        //get_sha256_hash(data_chunk, computed_hash, obj->chunks[i].size);
+	sha256_output_hex(&cdata,computed_hash);
         computed_hashes[i] = strdup(computed_hash);
 
         free(data_chunk);
     }
-    fclose(data_file);
 
     struct merkle_tree_node *root = build_merkle_tree(obj, computed_hashes);
     if (!root) {
@@ -509,8 +571,9 @@ int main() {
     //}
     for(int i=0;i<obj->nchunks;i++){
       printf("computed hash: %s\n",computed_hashes[i]);
+
     }
-    print_merkle_tree(root,0);
+    print_merkle_tree(root,3);
     free_tree(root);
     free(computed_hashes);
     return 0;
